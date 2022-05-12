@@ -1,0 +1,80 @@
+# Use Managed Identity
+Connect-AzAccount -Identity
+
+# Get VMs with snapshot tag
+$tagResList = Get-AzResource -TagName "Snapshot" -TagValue "True" | foreach {
+		Get-AzResource -ResourceId $_.resourceid
+	}
+
+foreach($tagRes in $tagResList) {
+		if($tagRes.ResourceId -match "Microsoft.Compute")
+		{
+			$vm = Get-AzVM -ResourceGroupName $tagRes.ResourceId.Split("//")[4] -Name $tagRes.ResourceId.Split("//")[8]
+			#Set local variables
+			$location = $vm.Location
+			$resourceGroupName = $vm.ResourceGroupName
+			$vmname = $vm.Name
+
+			# Generate OS snapshot configuration
+			$snapshotName = $vm.StorageProfile.OsDisk.Name + $(get-date -Format 'yyyy-MM-dd-m')
+			$snapshot =  New-AzSnapshotConfig `
+				-SourceUri $vm.StorageProfile.OsDisk.ManagedDisk.Id `
+				-Location $location `
+				-CreateOption copy
+
+			# Create OS snapshot
+			New-AzSnapshot `
+				-Snapshot $snapshot `
+				-SnapshotName $snapshotName `
+				-ResourceGroupName $resourceGroupName
+	
+			# Add SnapshotTags
+			$tags = (Get-AzResource -ResourceGroupName $resourceGroupName -Name $snapshotName).Tags
+			$tags += @{Location="$location"; Vm="$vmname"; SnapshotDate="$(get-date -Format 'yyyy-MM-dd-m')"; Script="JLOScript"}
+			Set-AzResource `
+				-ResourceGroupName $resourceGroupName `
+				-Name $snapshotName `
+				-ResourceType "Microsoft.Compute/snapshots" `
+				-Tag $tags `
+				-Force
+
+			# Generate DATA snapshot configuration
+			if($vm.StorageProfile.DataDisks.Count -ge 1){
+
+					#Condition with more than one data disks
+					for($i=0; $i -le $vm.StorageProfile.DataDisks.Count - 1; $i++){
+
+						# Generate snapshot configuration
+						$snapshotName = $vm.StorageProfile.DataDisks[$i].Name + $(get-date -Format 'yyyy-MM-dd-m')
+						$snapshot =  New-AzSnapshotConfig `
+							-SourceUri $vm.StorageProfile.DataDisks[$i].ManagedDisk.Id `
+							-Location $location `
+							-CreateOption copy
+
+						# Create snapshot
+						New-AzSnapshot `
+							-Snapshot $snapshot `
+							-SnapshotName $snapshotName `
+							-ResourceGroupName $resourceGroupName
+						
+						# Add SnapshotTags
+						$tags = (Get-AzResource -ResourceGroupName $resourceGroupName -Name $snapshotName).Tags
+						$tags += @{Location="$location"; Vm="$vmname"; SnapshotDate="$(get-date -Format 'yyyy-MM-dd-m')"; Script="JLOScript"}
+						Set-AzResource `
+							-ResourceGroupName $resourceGroupName `
+							-Name $snapshotName `
+							-ResourceType "Microsoft.Compute/snapshots" `
+							-Tag $tags `
+							-Force
+					}
+				}
+				
+			else{
+					Write-Host $vmInfo.Name + " doesn't have any additional data disk."
+				}
+		}
+
+	else{
+			$tagRes.ResourceId + " is not a compute instance"
+		}
+	}
